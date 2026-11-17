@@ -30,6 +30,15 @@ var (
 var start = time.Now()
 
 func main() {
+	// Unterbefehl für den Server: daten-bauen karte <pbf> <netzordner>
+	if len(os.Args) == 4 && os.Args[1] == "karte" {
+		fortschrittMelden = func(p int) { fmt.Printf("FORTSCHRITT %d\n", p) }
+		if err := karteBauen(os.Args[2], os.Args[3], func(f string, a ...any) { fmt.Printf(f+"\n", a...) }); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ordnerArg := flag.String("ordner", "daten", "Arbeitsordner")
 	neu := flag.Bool("neu", false, "Karte und Wegenetz neu bauen")
 	flag.Parse()

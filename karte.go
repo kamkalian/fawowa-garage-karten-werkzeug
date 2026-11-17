@@ -218,6 +218,15 @@ type relation struct {
 	wegIds []int64
 }
 
+// fortschrittMelden meldet den Fortschritt in Prozent (für den Worker auf dem Server); nil: nichts
+var fortschrittMelden func(int)
+
+func melde(p int) {
+	if fortschrittMelden != nil {
+		fortschrittMelden(p)
+	}
+}
+
 // karteBauen liest die PBF-Datei und schreibt die Karte nach <netzOrdner>/karte
 func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 	t0 := time.Now()
@@ -258,6 +267,7 @@ func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 		return err
 	}
 	log("Relationen: %d, benötigte Wege: %d", len(relationen), len(benoetigteWege))
+	melde(10)
 
 	// Schritt 1b: Welche Knoten braucht die Karte? Nur die der Wege, die ein Merkmal bilden oder in einer Relation stecken.
 	var bed []int64
@@ -273,6 +283,7 @@ func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 	if err != nil {
 		return err
 	}
+	melde(20)
 	slices.Sort(bed)
 	bed = slices.Compact(bed)
 	bedarf := bed
@@ -280,6 +291,7 @@ func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 	kLon := make([]int32, len(bedarf))
 	gefunden := make([]bool, len(bedarf))
 	log("Benötigte Knoten: %d", len(bedarf))
+	melde(30)
 
 	// Binäre Suche nach einem benötigten und gefundenen Knoten; -1, wenn nicht
 	suche := func(id int64) int {
@@ -301,6 +313,7 @@ func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 		return -1
 	}
 
+	melde(35)
 	// Schritt 2: Knoten und Wege lesen; die Knotenketten der benötigten Wege werden gemerkt
 	zeiger := 0
 	wegRefs := map[int64][]int64{}
@@ -399,6 +412,7 @@ func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 			}
 		}
 	}
+	melde(90)
 	log("Aus Relationen: Flächen %d, Linien %d", relFlaechen, relLinien)
 	log("Merkmale: %d, Punkte: %d", len(kb.meta), len(kb.pts)/2)
 
@@ -437,6 +451,7 @@ func karteBauen(pbfDatei, netzOrdner string, log func(string, ...any)) error {
 	if err := os.WriteFile(filepath.Join(ausgabe, "info.json"), infoJSON, 0o644); err != nil {
 		return err
 	}
+	melde(100)
 	log("Fertig.")
 	return nil
 }

@@ -372,3 +372,16 @@ func findeEintrag(r *zip.ReadCloser, name string) *zip.File {
 	}
 	return nil
 }
+
+// ladeManifest liest das externe Manifest einer Paketversion
+func ladeManifest(pfad string) (Manifest, error) {
+	var m Manifest
+	daten, err := os.ReadFile(pfad)
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(daten, &m); err != nil {
+		return m, fmt.Errorf("Manifest ungültig: %w", err)
+	}
+	return m, nil
+}

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daten-Werkzeug</title>
+<style>
+  :root { color-scheme: dark; --bg:#0f1115; --karte:#181b22; --rand:#2a2f3a; --text:#e8eaf0; --muted:#9aa3b2; --akzent:#3b82f6; --gut:#22c55e; --schlecht:#ef4444; }
+  body { margin:0; font: 15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  section { background: var(--karte); border: 1px solid var(--rand); border-radius: 10px; padding: 14px 16px; }
+  h1 { font-size: 20px; margin: 8px 0; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  label { display: grid; gap: 4px; margin-bottom: 8px; color: var(--muted); }
+  input[type=text], input[type=number], input[type=password] { background: var(--bg); color: var(--text); border: 1px solid var(--rand); border-radius: 6px; padding: 7px 9px; font: inherit; }
+  .zeile { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .zeile > label { flex: 1 1 200px; }
+  button { background: var(--akzent); color: white; border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  button.zweit { background: transparent; border: 1px solid var(--rand); color: var(--text); }
+  button:disabled { opacity: .45; cursor: default; }
+  ul.schritte { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+  ul.schritte li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 9px; border: 1px solid var(--rand); border-radius: 6px; }
+  .st { font-size: 13px; min-width: 96px; color: var(--muted); }
+  .st.fertig { color: var(--gut); } .st.fehler { color: var(--schlecht); } .st.laeuft { color: var(--akzent); }
+  .balken { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; display: none; }
+  .balken > div { height: 100%; background: var(--akzent); width: 0%; transition: width .2s; }
+  pre { background: var(--bg); border: 1px solid var(--rand); border-radius: 6px; padding: 10px; max-height: 260px; overflow: auto; white-space: pre-wrap; margin: 0; font-size: 13px; }
+  .hinweis { color: var(--muted); font-size: 13px; }
+  .warn { color: #fbbf24; }
+  .ok { color: var(--gut); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Daten-Werkzeug</h1>
+
+  <section>
+    <h2>Einstellungen</h2>
+    <div class="zeile">
+      <label>Arbeitsordner <input type="text" id="arbeitsordner"></label>
+      <label>Höchstens MB je ZIP <input type="number" id="maxZip" min="10" max="200"></label>
+    </div>
+    <h2 style="margin-top:12px">Server (SCP)</h2>
+    <div class="zeile">
+      <label>Rechner <input type="text" id="host"></label>
+      <label>Port <input type="number" id="port" min="1" max="65535"></label>
+      <label>Benutzer <input type="text" id="benutzer"></label>
+    </div>
+    <div class="zeile">
+      <label>Schlüsseldatei (optional) <input type="text" id="schluessel"></label>
+      <label>Passphrase (optional) <input type="password" id="passphrase" autocomplete="off"></label>
+    </div>
+    <div class="zeile">
+      <label>Passwort (ohne Schlüssel) <input type="password" id="passwort" autocomplete="off"></label>
+      <label>Zielordner auf dem Server <input type="text" id="ziel"></label>
+    </div>
+    <div class="zeile">
+      <label style="display:flex;gap:6px;align-items:center;flex:0"><input type="checkbox" id="merken"> Passwort merken (verschlüsselt)</label>
+      <button class="zweit" id="speichern">Einstellungen speichern</button>
+      <button class="zweit" id="testen">Server testen</button>
+    </div>
+    <p class="hinweis" id="serverMeldung"></p>
+  </section>
+
+  <section>
+    <h2>Ablauf</h2>
+    <ul class="schritte" id="schritte"></ul>
+    <div class="zeile" style="margin-top:10px">
+      <button id="alles">Alles ausführen</button>
+      <button class="zweit" id="ausgewaehlt">Ausgewählte ausführen</button>
+      <button class="zweit" id="abbrechen">Abbrechen</button>
+    </div>
+    <p class="hinweis">Die Karten-Schritte (Java, Planetiler, Schriften) kommen in einem späteren Schritt. Bis dahin werden sie als „ausstehend“ übersprungen.</p>
+  </section>
+
+  <section>
+    <h2>Protokoll</h2>
+    <pre id="protokoll"></pre>
+  </section>
+
+  <section>
+    <button class="zweit" id="beenden">Werkzeug beenden</button>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const protokoll = (text) => { const p = $('protokoll'); p.textContent += text + '\n'; p.scrollTop = p.scrollHeight; };
+
+async function holen(pfad, optionen) {
+  const antwort = await fetch(pfad, optionen);
+  const daten = await antwort.json().catch(() => ({}));
+  if (!antwort.ok && !daten.fehler) throw new Error('Anfrage fehlgeschlagen (' + antwort.status + ')');
+  return daten;
+}
+
+function formularFuellen(e) {
+  $('arbeitsordner').value = e.arbeitsordner || '';
+  $('maxZip').value = e.maxZipMB || 200;
+  $('host').value = e.server.host || '';
+  $('port').value = e.server.port || 22;
+  $('benutzer').value = e.server.benutzer || '';
+  $('schluessel').value = e.server.schluessel || '';
+  $('ziel').value = e.server.zielOrdner || '';
+  $('merken').checked = !!e.server.passwortMerken;
+  $('serverMeldung').textContent = e.passwortGesetzt ? 'Ein gespeichertes Passwort ist vorhanden.' : '';
+}
+
+function formularLesen() {
+  return {
+    arbeitsordner: $('arbeitsordner').value,
+    maxZipMB: Number($('maxZip').value),
+    server: {
+      host: $('host').value, port: Number($('port').value), benutzer: $('benutzer').value,
+      schluessel: $('schluessel').value, zielOrdner: $('ziel').value, passwortMerken: $('merken').checked
+    },
+    passwort: $('passwort').value,
+    passphrase: $('passphrase').value
+  };
+}
+
+function statusText(s) {
+  return { offen: 'offen', laeuft: 'läuft', fertig: 'fertig', fehler: 'Fehler', ausstehend: 'ausstehend', uebersprungen: 'übersprungen' }[s] || s;
+}
+
+function schritteZeichnen(liste) {
+  const ul = $('schritte');
+  ul.innerHTML = '';
+  for (const s of liste) {
+    const li = document.createElement('li');
+    li.dataset.id = s.id;
+    const box = document.createElement('input');
+    box.type = 'checkbox'; box.checked = true; box.dataset.id = s.id;
+    const name = document.createElement('span'); name.textContent = s.name; name.style.flex = '1';
+    const st = document.createElement('span'); st.className = 'st ' + s.status; st.textContent = statusText(s.status);
+    const balken = document.createElement('div'); balken.className = 'balken';
+    balken.appendChild(document.createElement('div'));
+    li.append(box, name, st, balken);
+    ul.append(li);
+  }
+}
+
+function schrittLi(id) {
+  return document.querySelector('#schritte li[data-id="' + id + '"]');
+}
+
+function schrittStatus(id, status) {
+  const li = schrittLi(id);
+  if (!li) return;
+  const st = li.querySelector('.st');
+  st.className = 'st ' + status; st.textContent = statusText(status);
+  if (status !== 'laeuft') li.querySelector('.balken').style.display = 'none';
+}
+
+function schrittFortschritt(id, anteil, text) {
+  const li = schrittLi(id);
+  if (!li) return;
+  const b = li.querySelector('.balken');
+  b.style.display = 'block';
+  b.firstChild.style.width = Math.round(anteil * 100) + '%';
+  if (text) li.querySelector('.st').title = text;
+}
+
+async function laden() {
+  const z = await holen('/api/zustand');
+  formularFuellen(z.einstellungen);
+  schritteZeichnen(z.schritte);
+}
+
+async function speichern() {
+  const f = formularLesen();
+  const antwort = await holen('/api/einstellungen', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) });
+  if (antwort.fehler) { protokoll('Speichern fehlgeschlagen: ' + antwort.fehler); return; }
+  $('passwort').value = ''; $('passphrase').value = '';
+  formularFuellen(antwort);
+  protokoll('Einstellungen gespeichert.');
+}
+
+async function testen() {
+  const f = formularLesen();
+  const r = await holen('/api/server/testen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vertrauen: false, passwort: f.passwort, passphrase: f.passphrase }) });
+  if (r.ok) {
+    $('serverMeldung').className = 'hinweis ok';
+    $('serverMeldung').textContent = 'Verbindung in Ordnung. Freier Platz am Zielordner: ' + Math.round(r.frei / 1e9) + ' GB.';
+  } else if (r.unbekannt) {
+    if (confirm('Der Server ist unbekannt.\nFingerabdruck: ' + r.fingerabdruck + '\nDiesem Server vertrauen und ihn speichern?')) {
+      const r2 = await holen('/api/server/testen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vertrauen: true, passwort: f.passwort, passphrase: f.passphrase }) });
+      $('serverMeldung').textContent = r2.ok ? 'Server gespeichert und erreichbar.' : (r2.fehler || 'Fehler');
+    } else {
+      $('serverMeldung').textContent = 'Nicht bestätigt.';
+    }
+  } else {
+    $('serverMeldung').className = 'hinweis warn';
+    $('serverMeldung').textContent = r.fehler || 'Fehler';
+  }
+}
+
+async function starten(ids) {
+  const r = await holen('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schritte: ids }) });
+  if (r.fehler) protokoll(r.fehler);
+}
+
+function ereignisseHoeren() {
+  const quelle = new EventSource('/api/ereignisse');
+  quelle.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.art === 'schritt') schrittStatus(e.schritt, e.status);
+    else if (e.art === 'fortschritt') schrittFortschritt(e.schritt, e.anteil, e.text);
+    else if (e.art === 'protokoll') protokoll(e.zeit + '  ' + e.text);
+    else if (e.art === 'fertig') protokoll(e.zeit + '  Ablauf beendet.');
+  };
+}
+
+const ALLE = ['osm', 'hoehen', 'netz', 'karte-werkzeuge', 'karte', 'schriften', 'paket-netz', 'paket-karte', 'hochladen'];
+$('speichern').onclick = () => speichern().catch((e) => protokoll(e.message));
+$('testen').onclick = () => testen().catch((e) => protokoll(e.message));
+$('alles').onclick = () => starten(ALLE).catch((e) => protokoll(e.message));
+$('ausgewaehlt').onclick = () => starten([...document.querySelectorAll('#schritte input:checked')].map((b) => b.dataset.id)).catch((e) => protokoll(e.message));
+$('abbrechen').onclick = () => holen('/api/abbrechen', { method: 'POST' });
+$('beenden').onclick = async () => {
+  await holen('/api/beenden', { method: 'POST' });
+  document.body.innerHTML = '<main><p>Das Werkzeug ist beendet. Du kannst dieses Fenster schließen.</p></main>';
+};
+
+laden().then(ereignisseHoeren).catch((e) => protokoll('Fehler: ' + e.message));
+</script>
+</body>
+</html>

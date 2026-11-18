@@ -30,6 +30,14 @@ var (
 var start = time.Now()
 
 func main() {
+	// Ohne Argumente: Oberfläche im Browser
+	if len(os.Args) == 1 {
+		ex, _ := os.Executable()
+		if err := StarteOberflaeche(filepath.Join(filepath.Dir(ex), "daten"), uiDateien); err != nil {
+			fehler(err)
+		}
+		return
+	}
 	// Unterbefehl für den Server: daten-bauen karte <pbf> <netzordner>
 	if len(os.Args) == 4 && os.Args[1] == "karte" {
 		fortschrittMelden = func(p int) { fmt.Printf("FORTSCHRITT %d\n", p) }
@@ -131,7 +139,14 @@ func logZeile(format string, a ...any) {
 }
 
 // fortschrittZeile überschreibt die aktuelle Terminalzeile mit einem Balken
+// fortschrittHook leitet den Fortschritt an die Oberfläche weiter (nil: Anzeige im Terminal)
+var fortschrittHook func(name string, anteil float64, text string)
+
 func fortschrittZeile(name string, anteil float64, text string) {
+	if fortschrittHook != nil {
+		fortschrittHook(name, anteil, text)
+		return
+	}
 	if anteil < 0 {
 		anteil = 0
 	}

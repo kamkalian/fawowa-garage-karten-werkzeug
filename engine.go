@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"golang.org/x/crypto/ssh"
 	"os"
 	"path/filepath"
 	"sort"
@@ -85,6 +86,8 @@ type Engine struct {
 	abbruch context.CancelFunc
 	status  map[string]string
 	einst   func() Einstellungen
+	java    string
+	jar     string
 }
 
 func neueEngine(hub *Hub, einst func() Einstellungen) *Engine {
@@ -180,6 +183,16 @@ func (e *Engine) setze(id, status string) {
 
 func (e *Engine) protokoll(text string) {
 	e.hub.Senden(Ereignis{Art: "protokoll", Text: text})
+	// Zusätzlich ins Protokoll im Arbeitsordner: <arbeit>/protokoll/<datum>.log
+	arbeit, _ := filepath.Abs(e.einst().Arbeitsordner)
+	ordner := filepath.Join(arbeit, "protokoll")
+	if os.MkdirAll(ordner, 0o755) == nil {
+		datei := filepath.Join(ordner, time.Now().Format("2006-01-02")+".log")
+		if f, err := os.OpenFile(datei, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintf(f, "%s  %s\n", time.Now().Format("15:04:05"), text)
+			f.Close()
+		}
+	}
 }
 
 // errAusstehend: der Schritt ist noch nicht umgesetzt (wird als „ausstehend“ angezeigt, der Ablauf geht weiter)
@@ -228,7 +241,47 @@ func (e *Engine) fuehreAus(ctx context.Context, id string) error {
 			return fmt.Errorf("OSM-Daten fehlen. Bitte zuerst „OSM-Daten laden“ ausführen.")
 		}
 		return netzBauen(pbf, hoehen, netz, logf)
-	case "karte-werkzeuge", "karte", "schriften", "paket-karte":
+	case "karte-werkzeuge":
+		java, jar, err := sichereWerkzeuge(filepath.Join(arbeit, "werkzeuge"), logf)
+		if err != nil {
+			return err
+		}
+		e.mu.Lock()
+		e.java, e.jar = java, jar
+		e.mu.Unlock()
+		return nil
+	case "karte":
+		if _, err := os.Stat(pbf); err != nil {
+			return fmt.Errorf("OSM-Daten fehlen. Bitte zuerst „OSM-Daten laden“ ausführen.")
+		}
+		e.mu.Lock()
+		java, jar := e.java, e.jar
+		e.mu.Unlock()
+		if java == "" || jar == "" {
+			var err error
+			java, jar, err = sichereWerkzeuge(filepath.Join(arbeit, "werkzeuge"), logf)
+			if err != nil {
+				return err
+			}
+		}
+		return planetilerLauf(ctx, java, jar, pbf, filepath.Join(arbeit, "karte"), filepath.Join(arbeit, "werkzeuge", "quellen"), ein.PlanetilerXmxGB, ein.PlanetilerZoom, ein.PlanetilerMmap, logf)
+	case "paket-karte":
+		karteDatei := filepath.Join(arbeit, "karte", "germany.pmtiles")
+		if _, err := os.Stat(karteDatei); err != nil {
+			return fmt.Errorf("Die Karte fehlt. Bitte zuerst „Kacheln (PMTiles) bauen“ ausführen.")
+		}
+		version := time.Now().UTC().Format("2006-01-02T1504")
+		grenze := int64(ein.MaxZipMB) * 1_000_000
+		if grenze <= 0 {
+			grenze = PaketGrenze
+		}
+		manifest, err := Packen("karte", version, filepath.Join(arbeit, "karte"), filepath.Join(pakete, "karte-"+version), []string{"germany.pmtiles"}, grenze, map[string]string{"quelle": "Planetiler " + planetilerVersion})
+		if err != nil {
+			return err
+		}
+		logf("Paket gepackt: %s", manifest)
+		return nil
+	case "schriften":
 		return errAusstehend
 	case "paket-netz":
 		return paketNetzPacken(netz, pakete, ein.MaxZipMB, logf)
@@ -276,36 +329,10 @@ func paketNetzPacken(netz, pakete string, maxMB int, logf func(string, ...any)) 
 	return nil
 }
 
-// hochladenNeuestesPaket lädt das jüngste fertig gepackte Wegenetz-Paket auf den Server
+// hochladenNeuestesPaket lädt das jüngste Wegenetz-Paket und das jüngste Karten-Paket auf den Server (sofern vorhanden)
 func hochladenNeuestesPaket(ein Einstellungen, pakete string, logf func(string, ...any)) error {
-	eintraege, err := os.ReadDir(pakete)
-	if err != nil {
-		return fmt.Errorf("kein Paket vorhanden")
-	}
-	var neueste string
-	for _, e := range eintraege {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "netz-") && e.Name() > neueste {
-			neueste = e.Name()
-		}
-	}
-	if neueste == "" {
-		return fmt.Errorf("kein Paket vorhanden. Bitte zuerst „Pakete packen“ ausführen.")
-	}
-	ordner := filepath.Join(pakete, neueste)
-	// Name des externen Manifests: <art>-<version>.manifest.json
-	version := strings.TrimPrefix(neueste, "netz-")
-	manifestPfad := filepath.Join(ordner, "netz-"+version+".manifest.json")
-	m, err := ladeManifest(manifestPfad)
-	if err != nil {
-		return err
-	}
-	if len(m.Zips) == 0 {
-		return fmt.Errorf("das Paket enthält keine ZIP-Dateien")
-	}
 	z := ein.Server
-	zugang := ServerZugang{
-		Host: z.Host, Port: z.Port, Benutzer: z.Benutzer, Schluessel: z.Schluessel, Ziel: z.ZielOrdner,
-	}
+	zugang := ServerZugang{Host: z.Host, Port: z.Port, Benutzer: z.Benutzer, Schluessel: z.Schluessel, Ziel: z.ZielOrdner}
 	if z.PasswortVerschl != "" {
 		pw, err := Entschluesseln(z.PasswortVerschl)
 		if err != nil {
@@ -325,13 +352,70 @@ func hochladenNeuestesPaket(ein Einstellungen, pakete string, logf func(string, 
 		home, _ := os.UserHomeDir()
 		kh = filepath.Join(home, ".ssh", "known_hosts")
 	}
+	var pakete2 []string
+	for _, art := range []string{"netz-", "karte-"} {
+		if neu := neuestesPaket(pakete, art); neu != "" {
+			pakete2 = append(pakete2, neu)
+		}
+	}
+	if len(pakete2) == 0 {
+		return fmt.Errorf("kein Paket vorhanden. Bitte zuerst „Pakete packen“ ausführen.")
+	}
 	c, err := verbinden(zugang, kh, false)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	logf("Verbunden mit %s, lade %d ZIP-Dateien hoch", z.Host, len(m.Zips))
-	return PaketHochladen(c, z.ZielOrdner, neueste, ordner, m.Zips, manifestPfad, func(zip string, gesendet, gesamt int64) {
-		logf("%s: %d von %d MB", zip, gesendet/1_000_000, gesamt/1_000_000)
-	})
+	for _, name := range pakete2 {
+		ordner := filepath.Join(pakete, name)
+		version := strings.SplitN(name, "-", 2)[1]
+		art := strings.SplitN(name, "-", 2)[0]
+		manifestPfad := filepath.Join(ordner, art+"-"+version+".manifest.json")
+		m, err := ladeManifest(manifestPfad)
+		if err != nil {
+			return err
+		}
+		// Platz prüfen: Teile, Entpacken und alte Version brauchen etwa das 2,2-fache der Paketgröße
+		var gesamt int64
+		for _, zi := range m.Zips {
+			gesamt += zi.Bytes
+		}
+		frei, err := freierPlatz(c, z.ZielOrdner)
+		if err == nil && frei < int64(float64(gesamt)*2.2) {
+			return fmt.Errorf("auf dem Server fehlen etwa %d MB für %s", (int64(float64(gesamt)*2.2)-frei)/1_000_000, name)
+		}
+		logf("Lade %s hoch (%d ZIP-Dateien, %d MB)", name, len(m.Zips), gesamt/1_000_000)
+		if err := PaketHochladen(c, z.ZielOrdner, name, ordner, m.Zips, manifestPfad, func(zip string, gesendet, groesse int64) {
+			logf("%s: %d von %d MB", zip, gesendet/1_000_000, groesse/1_000_000)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// neuestesPaket liefert den jüngsten Paketordner mit dem Präfix (z. B. netz-), leer wenn keiner da ist
+func neuestesPaket(pakete, praefix string) string {
+	eintraege, err := os.ReadDir(pakete)
+	if err != nil {
+		return ""
+	}
+	var neueste string
+	for _, e := range eintraege {
+		if e.IsDir() && strings.HasPrefix(e.Name(), praefix) && e.Name() > neueste {
+			neueste = e.Name()
+		}
+	}
+	return neueste
+}
+
+// freierPlatz liefert den freien Platz (Bytes) am Zielordner auf dem Server
+func freierPlatz(c *ssh.Client, ziel string) (int64, error) {
+	out, err := befehl(c, "mkdir -p "+shellQuote(ziel)+" && df -B1 --output=avail "+shellQuote(ziel)+" | tail -1")
+	if err != nil {
+		return 0, err
+	}
+	var frei int64
+	_, err = fmt.Sscan(strings.TrimSpace(out), &frei)
+	return frei, err
 }

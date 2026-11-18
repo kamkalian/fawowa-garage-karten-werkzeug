@@ -30,6 +30,15 @@ var (
 var start = time.Now()
 
 func main() {
+	// Ohne Oberfläche: daten-werkzeug.exe --ohne-oberflaeche --alles
+	for _, arg := range os.Args[1:] {
+		if arg == "--ohne-oberflaeche" {
+			if err := laeufOhneOberflaeche(hatArg("--alles")); err != nil {
+				fehler(err)
+			}
+			return
+		}
+	}
 	// Ohne Argumente: Oberfläche im Browser
 	if len(os.Args) == 1 {
 		ex, _ := os.Executable()
@@ -184,4 +193,13 @@ func warteAufEnter() {
 	fmt.Print("\nEnter drücken zum Beenden ...")
 	var s string
 	fmt.Scanln(&s)
+}
+
+func hatArg(name string) bool {
+	for _, a := range os.Args[1:] {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }

@@ -1,7 +1,8 @@
 package main
 
-// Einstellungen des Werkzeugs: %APPDATA%\fawowa-daten\einstellungen.json. Passwörter und Passphrasen stehen nur verschlüsselt
-// (DPAPI) in der Datei; in Antworten an die Oberfläche erscheinen sie nie, nur die Angabe „gesetzt“.
+// Einstellungen des Werkzeugs: %APPDATA%\fawowa-daten\einstellungen.json. Die Passphrase der Schlüsseldatei steht nur
+// verschlüsselt (DPAPI) in der Datei; in Antworten an die Oberfläche erscheint sie nie, nur die Angabe „gesetzt“.
+// Ein Passwort für die Anmeldung gibt es nicht: angemeldet wird mit dem Schlüssel.
 
 import (
 	"encoding/json"
@@ -16,9 +17,8 @@ type ServerEinstellungen struct {
 	Benutzer          string `json:"benutzer"`
 	Schluessel        string `json:"schluessel"`
 	ZielOrdner        string `json:"zielOrdner"`
-	PasswortVerschl   string `json:"passwortVerschl,omitempty"`
 	PassphraseVerschl string `json:"passphraseVerschl,omitempty"`
-	PasswortMerken    bool   `json:"passwortMerken"`
+	PassphraseMerken  bool   `json:"passphraseMerken"`
 	KnownHosts        string `json:"knownHosts"`
 }
 
@@ -86,16 +86,14 @@ func SpeichereEinstellungen(pfad string, e Einstellungen) error {
 	return os.Rename(tmp, pfad)
 }
 
-// Oeffentlich ist die Sicht für die Oberfläche: ohne Geheimnisse, nur mit der Angabe, ob sie gesetzt sind
+// Oeffentlich ist die Sicht für die Oberfläche: ohne Geheimnisse, nur mit der Angabe, ob die Passphrase gesetzt ist
 type Oeffentlich struct {
 	Einstellungen
-	PasswortGesetzt   bool `json:"passwortGesetzt"`
 	PassphraseGesetzt bool `json:"passphraseGesetzt"`
 }
 
 func OeffentlichSicht(e Einstellungen) Oeffentlich {
-	gesetzt := Oeffentlich{PasswortGesetzt: e.Server.PasswortVerschl != "", PassphraseGesetzt: e.Server.PassphraseVerschl != ""}
-	e.Server.PasswortVerschl = ""
+	gesetzt := Oeffentlich{PassphraseGesetzt: e.Server.PassphraseVerschl != ""}
 	e.Server.PassphraseVerschl = ""
 	gesetzt.Einstellungen = e
 	return gesetzt

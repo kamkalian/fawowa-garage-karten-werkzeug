@@ -28,7 +28,7 @@ func laeufOhneOberflaeche(alles bool) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("Keine Schritte gewählt (zum Beispiel: --alles)")
 	}
-	if err := engine.Start(ids); err != nil {
+	if err := engine.Start(ids, nil); err != nil {
 		return err
 	}
 	for e := range kanal {

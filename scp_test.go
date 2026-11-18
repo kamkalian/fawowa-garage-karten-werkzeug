@@ -28,6 +28,7 @@ type testServer struct {
 	adresse     string
 	host        ssh.PublicKey
 	verfaelscht int // so viele Dateiübertragungen werden absichtlich verfälscht
+	schluessel  string
 }
 
 func neuerTestServer(t *testing.T, verfaelscht int) *testServer {
@@ -39,9 +40,18 @@ func neuerTestServer(t *testing.T, verfaelscht int) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cpub, cpriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpubSSH, err := ssh.NewPublicKey(cpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schluessel := testSchluesselDatei(t, cpriv)
 	cfg := &ssh.ServerConfig{
-		PasswordCallback: func(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
-			if c.User() == "test" && string(pw) == "geheim" {
+		PublicKeyCallback: func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if c.User() == "test" && string(key.Marshal()) == string(cpubSSH.Marshal()) {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("falsch")
@@ -52,7 +62,7 @@ func neuerTestServer(t *testing.T, verfaelscht int) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &testServer{t: t, ln: ln, adresse: ln.Addr().String(), host: signer.PublicKey(), verfaelscht: verfaelscht}
+	s := &testServer{t: t, ln: ln, adresse: ln.Addr().String(), host: signer.PublicKey(), verfaelscht: verfaelscht, schluessel: schluessel}
 	go func() {
 		for {
 			tcp, err := ln.Accept()
@@ -199,7 +209,7 @@ func testZip(t *testing.T, ordner, name string, n int) ZipEintrag {
 func zugangFuer(s *testServer, ziel string) (ServerZugang, string) {
 	host, port, _ := net.SplitHostPort(s.adresse)
 	p, _ := strconv.Atoi(port)
-	return ServerZugang{Host: host, Port: p, Benutzer: "test", Passwort: "geheim", Ziel: ziel}, filepath.Join(os.TempDir(), "kh-"+port)
+	return ServerZugang{Host: host, Port: p, Benutzer: "test", Schluessel: s.schluessel, Ziel: ziel}, filepath.Join(os.TempDir(), "kh-"+port)
 }
 
 func TestHostSchluesselUnbekanntWirdAbgefragt(t *testing.T) {

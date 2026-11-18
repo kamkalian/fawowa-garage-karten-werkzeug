@@ -108,7 +108,7 @@ func ladeDatei(url, ziel string, optional, neu bool, zeigeName string, log func(
 			geladen64 += int64(n)
 			if time.Since(letzte) > 500*time.Millisecond && gesamt > 0 {
 				letzte = time.Now()
-				fortschrittZeile(zeigeName, float64(geladen64)/float64(gesamt), fmt.Sprintf("%s von %s", mb(geladen64), mb(gesamt)))
+				fortschrittZeile(zeigeName, float64(geladen64)/float64(gesamt), fmt.Sprintf("%s von %s", groesseText(geladen64), groesseText(gesamt)))
 			}
 		}
 		if rerr == io.EOF {

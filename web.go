@@ -58,6 +58,7 @@ func StarteOberflaeche(arbeitStandard string, ui fs.FS) error {
 	mux.HandleFunc("/api/zustand", ws.zugriff(ws.zustand))
 	mux.HandleFunc("/api/einstellungen", ws.zugriff(ws.einstellungen))
 	mux.HandleFunc("/api/server/testen", ws.zugriff(ws.serverTesten))
+	mux.HandleFunc("/api/dialog/schluessel", ws.zugriff(ws.schluesselWaehlen))
 	mux.HandleFunc("/api/start", ws.zugriff(ws.starten))
 	mux.HandleFunc("/api/abbrechen", ws.zugriff(ws.abbrechen))
 	mux.HandleFunc("/api/ereignisse", ws.zugriff(ws.ereignisse))
@@ -146,7 +147,6 @@ func (w *webServer) zustand(rw http.ResponseWriter, r *http.Request) {
 // einstellungenAnfrage: Einstellungen plus die Geheimnisse, die nur beim Speichern vom Formular kommen
 type einstellungenAnfrage struct {
 	Einstellungen
-	Passwort   string `json:"passwort"`
 	Passphrase string `json:"passphrase"`
 }
 
@@ -163,30 +163,18 @@ func (w *webServer) einstellungen(rw http.ResponseWriter, r *http.Request) {
 	w.einstMu.Lock()
 	defer w.einstMu.Unlock()
 	neu := a.Einstellungen
-	// Geheimnisse: vorhandene behalten, wenn nichts Neues eingegeben wurde; nur mit „merken“ speichern
-	neu.Server.PasswortVerschl = w.einst.Server.PasswortVerschl
+	// Die Passphrase bleibt verschlüsselt erhalten, bis sie ersetzt oder „merken“ abgewählt wird
 	neu.Server.PassphraseVerschl = w.einst.Server.PassphraseVerschl
-	if !neu.Server.PasswortMerken {
-		neu.Server.PasswortVerschl = ""
+	if !neu.Server.PassphraseMerken {
+		neu.Server.PassphraseVerschl = ""
 	}
-	if a.Passwort != "" && neu.Server.PasswortMerken {
-		v, err := Verschluesseln(a.Passwort)
-		if err != nil {
-			json2(rw, http.StatusBadRequest, map[string]string{"fehler": err.Error()})
-			return
-		}
-		neu.Server.PasswortVerschl = v
-	}
-	if a.Passphrase != "" && neu.Server.PasswortMerken {
+	if a.Passphrase != "" && neu.Server.PassphraseMerken {
 		v, err := Verschluesseln(a.Passphrase)
 		if err != nil {
 			json2(rw, http.StatusBadRequest, map[string]string{"fehler": err.Error()})
 			return
 		}
 		neu.Server.PassphraseVerschl = v
-	}
-	if !neu.Server.PasswortMerken {
-		neu.Server.PassphraseVerschl = ""
 	}
 	if err := SpeichereEinstellungen(w.einstPfad, neu); err != nil {
 		json2(rw, http.StatusInternalServerError, map[string]string{"fehler": "Speichern fehlgeschlagen"})
@@ -200,11 +188,10 @@ func (w *webServer) einstellungen(rw http.ResponseWriter, r *http.Request) {
 func (w *webServer) serverTesten(rw http.ResponseWriter, r *http.Request) {
 	var a struct {
 		Vertrauen  bool   `json:"vertrauen"`
-		Passwort   string `json:"passwort"`
 		Passphrase string `json:"passphrase"`
 	}
 	json.NewDecoder(http.MaxBytesReader(rw, r.Body, 16<<10)).Decode(&a)
-	zugang, kh, err := w.zugang(a.Passwort, a.Passphrase)
+	zugang, kh, err := w.zugang(a.Passphrase)
 	if err != nil {
 		json2(rw, http.StatusOK, map[string]any{"ok": false, "fehler": err.Error()})
 		return
@@ -215,7 +202,7 @@ func (w *webServer) serverTesten(rw http.ResponseWriter, r *http.Request) {
 			json2(rw, http.StatusOK, map[string]any{"ok": false, "unbekannt": true, "fingerabdruck": u.Fingerabdruck, "fehler": u.Error()})
 			return
 		}
-		json2(rw, http.StatusOK, map[string]any{"ok": false, "fehler": err.Error()})
+		json2(rw, http.StatusOK, map[string]any{"ok": false, "fehler": anmeldeFehlerText(err)})
 		return
 	}
 	defer c.Close()
@@ -229,20 +216,11 @@ func (w *webServer) serverTesten(rw http.ResponseWriter, r *http.Request) {
 	json2(rw, http.StatusOK, map[string]any{"ok": true, "frei": frei})
 }
 
-// zugang baut die Verbindungsangaben aus den Einstellungen; Passwörter aus dem Formular haben Vorrang
-func (w *webServer) zugang(passwort, passphrase string) (ServerZugang, string, error) {
+// zugang baut die Verbindungsangaben aus den Einstellungen; eine Passphrase aus dem Formular hat Vorrang
+func (w *webServer) zugang(passphrase string) (ServerZugang, string, error) {
 	e := w.aktuelleEinstellungen()
 	s := e.Server
 	z := ServerZugang{Host: s.Host, Port: s.Port, Benutzer: s.Benutzer, Schluessel: s.Schluessel, Ziel: s.ZielOrdner}
-	if passwort != "" {
-		z.Passwort = passwort
-	} else if s.PasswortVerschl != "" {
-		pw, err := Entschluesseln(s.PasswortVerschl)
-		if err != nil {
-			return z, "", err
-		}
-		z.Passwort = pw
-	}
 	if passphrase != "" {
 		z.Passphrase = passphrase
 	} else if s.PassphraseVerschl != "" {
@@ -263,9 +241,10 @@ func (w *webServer) zugang(passwort, passphrase string) (ServerZugang, string, e
 func (w *webServer) starten(rw http.ResponseWriter, r *http.Request) {
 	var a struct {
 		Schritte []string `json:"schritte"`
+		Neu      []string `json:"neu"`
 	}
 	json.NewDecoder(http.MaxBytesReader(rw, r.Body, 16<<10)).Decode(&a)
-	if err := w.engine.Start(a.Schritte); err != nil {
+	if err := w.engine.Start(a.Schritte, a.Neu); err != nil {
 		json2(rw, http.StatusConflict, map[string]string{"fehler": err.Error()})
 		return
 	}
@@ -306,4 +285,14 @@ func (w *webServer) ereignisse(rw http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
+}
+
+// schluesselWaehlen öffnet den Windows-Dateidialog; liefert den Pfad oder leer bei Abbruch
+func (w *webServer) schluesselWaehlen(rw http.ResponseWriter, r *http.Request) {
+	pfad, err := schluesselDialog()
+	if err != nil {
+		json2(rw, http.StatusOK, map[string]string{"fehler": err.Error()})
+		return
+	}
+	json2(rw, http.StatusOK, map[string]string{"pfad": pfad})
 }

@@ -7,8 +7,8 @@
 <style>
   :root { color-scheme: dark; --bg:#0f1115; --karte:#181b22; --rand:#2a2f3a; --text:#e8eaf0; --muted:#9aa3b2; --akzent:#3b82f6; --gut:#22c55e; --schlecht:#ef4444; }
   body { margin:0; font: 15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--text); }
-  main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
-  section { background: var(--karte); border: 1px solid var(--rand); border-radius: 10px; padding: 14px 16px; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  section { background: var(--karte); border: 1px solid var(--rand); border-radius: 10px; padding: 14px 16px; min-width: 0; }
   h1 { font-size: 20px; margin: 8px 0; }
   h2 { font-size: 16px; margin: 0 0 10px; }
   label { display: grid; gap: 4px; margin-bottom: 8px; color: var(--muted); }
@@ -24,8 +24,10 @@
   .st.fertig { color: var(--gut); } .st.fehler { color: var(--schlecht); } .st.laeuft { color: var(--akzent); }
   .balken { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; display: none; }
   .balken > div { height: 100%; background: var(--akzent); width: 0%; transition: width .2s; }
-  pre { background: var(--bg); border: 1px solid var(--rand); border-radius: 6px; padding: 10px; max-height: 260px; overflow: auto; white-space: pre-wrap; margin: 0; font-size: 13px; }
   .hinweis { color: var(--muted); font-size: 13px; }
+  .roh { font-size: 13px; color: var(--muted); }
+  .zahl { font-size: 13px; color: var(--text); min-width: 9rem; }
+  pre { background: var(--bg); border: 1px solid var(--rand); border-radius: 6px; padding: 10px; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; width: 100%; box-sizing: border-box; margin: 0; font-size: 13px; }
   .warn { color: #fbbf24; }
   .ok { color: var(--gut); }
 </style>
@@ -47,15 +49,15 @@
       <label>Benutzer <input type="text" id="benutzer"></label>
     </div>
     <div class="zeile">
-      <label>Schlüsseldatei (optional) <input type="text" id="schluessel"></label>
-      <label>Passphrase (optional) <input type="password" id="passphrase" autocomplete="off"></label>
+      <label>Schlüsseldatei <input type="text" id="schluessel"></label>
+      <button class="zweit" id="schluesselWaehlen" type="button">Datei wählen …</button>
+      <label>Passphrase der Schlüsseldatei (optional) <input type="password" id="passphrase" autocomplete="off"></label>
     </div>
     <div class="zeile">
-      <label>Passwort (ohne Schlüssel) <input type="password" id="passwort" autocomplete="off"></label>
       <label>Zielordner auf dem Server <input type="text" id="ziel"></label>
     </div>
     <div class="zeile">
-      <label style="display:flex;gap:6px;align-items:center;flex:0"><input type="checkbox" id="merken"> Passwort merken (verschlüsselt)</label>
+      <label style="display:flex;gap:6px;align-items:center;flex:0"><input type="checkbox" id="merken"> Passphrase merken (verschlüsselt)</label>
       <button class="zweit" id="speichern">Einstellungen speichern</button>
       <button class="zweit" id="testen">Server testen</button>
     </div>
@@ -70,7 +72,7 @@
       <button class="zweit" id="ausgewaehlt">Ausgewählte ausführen</button>
       <button class="zweit" id="abbrechen">Abbrechen</button>
     </div>
-    <p class="hinweis">Die Karten-Schritte (Java, Planetiler, Schriften) kommen in einem späteren Schritt. Bis dahin werden sie als „ausstehend“ übersprungen.</p>
+    <p class="hinweis">Vorhandene Rohdaten werden nicht noch einmal geladen, außer „neu laden“ ist angehakt. Die Karten-Schritte (Java, Planetiler, Schriften) kommen in einem späteren Schritt. Bis dahin werden sie als „ausstehend“ übersprungen.</p>
   </section>
 
   <section>
@@ -101,8 +103,8 @@ function formularFuellen(e) {
   $('benutzer').value = e.server.benutzer || '';
   $('schluessel').value = e.server.schluessel || '';
   $('ziel').value = e.server.zielOrdner || '';
-  $('merken').checked = !!e.server.passwortMerken;
-  $('serverMeldung').textContent = e.passwortGesetzt ? 'Ein gespeichertes Passwort ist vorhanden.' : '';
+  $('merken').checked = !!e.server.passphraseMerken;
+  $('serverMeldung').textContent = e.passphraseGesetzt ? 'Eine gespeicherte Passphrase ist vorhanden.' : '';
 }
 
 function formularLesen() {
@@ -111,9 +113,8 @@ function formularLesen() {
     maxZipMB: Number($('maxZip').value),
     server: {
       host: $('host').value, port: Number($('port').value), benutzer: $('benutzer').value,
-      schluessel: $('schluessel').value, zielOrdner: $('ziel').value, passwortMerken: $('merken').checked
+      schluessel: $('schluessel').value, zielOrdner: $('ziel').value, passphraseMerken: $('merken').checked
     },
-    passwort: $('passwort').value,
     passphrase: $('passphrase').value
   };
 }
@@ -132,11 +133,27 @@ function schritteZeichnen(liste) {
     box.type = 'checkbox'; box.checked = true; box.dataset.id = s.id;
     const name = document.createElement('span'); name.textContent = s.name; name.style.flex = '1';
     const st = document.createElement('span'); st.className = 'st ' + s.status; st.textContent = statusText(s.status);
+    const zahl = document.createElement('span'); zahl.className = 'zahl';
     const balken = document.createElement('div'); balken.className = 'balken';
     balken.appendChild(document.createElement('div'));
-    li.append(box, name, st, balken);
+    li.append(box, name, st, zahl);
+    if (s.roh) {
+      const roh = document.createElement('span'); roh.className = 'roh';
+      roh.textContent = 'vorhanden seit ' + s.roh.seit + ' · ' + s.roh.groesse + (s.roh.detail ? ' · ' + s.roh.detail : '');
+      const neuLabel = document.createElement('label'); neuLabel.className = 'roh';
+      neuLabel.style.display = 'flex'; neuLabel.style.gap = '4px'; neuLabel.style.alignItems = 'center';
+      const neu = document.createElement('input'); neu.type = 'checkbox'; neu.dataset.neu = s.id;
+      neuLabel.append(neu, ' neu laden');
+      li.append(roh, neuLabel);
+    }
+    li.append(balken);
     ul.append(li);
   }
+}
+
+async function schritteAktualisieren() {
+  const z = await holen('/api/zustand');
+  schritteZeichnen(z.schritte);
 }
 
 function schrittLi(id) {
@@ -157,7 +174,7 @@ function schrittFortschritt(id, anteil, text) {
   const b = li.querySelector('.balken');
   b.style.display = 'block';
   b.firstChild.style.width = Math.round(anteil * 100) + '%';
-  if (text) li.querySelector('.st').title = text;
+  if (text) li.querySelector('.zahl').textContent = text;
 }
 
 async function laden() {
@@ -170,20 +187,20 @@ async function speichern() {
   const f = formularLesen();
   const antwort = await holen('/api/einstellungen', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) });
   if (antwort.fehler) { protokoll('Speichern fehlgeschlagen: ' + antwort.fehler); return; }
-  $('passwort').value = ''; $('passphrase').value = '';
+  $('passphrase').value = '';
   formularFuellen(antwort);
   protokoll('Einstellungen gespeichert.');
 }
 
 async function testen() {
   const f = formularLesen();
-  const r = await holen('/api/server/testen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vertrauen: false, passwort: f.passwort, passphrase: f.passphrase }) });
+  const r = await holen('/api/server/testen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vertrauen: false, passphrase: f.passphrase }) });
   if (r.ok) {
     $('serverMeldung').className = 'hinweis ok';
     $('serverMeldung').textContent = 'Verbindung in Ordnung. Freier Platz am Zielordner: ' + Math.round(r.frei / 1e9) + ' GB.';
   } else if (r.unbekannt) {
     if (confirm('Der Server ist unbekannt.\nFingerabdruck: ' + r.fingerabdruck + '\nDiesem Server vertrauen und ihn speichern?')) {
-      const r2 = await holen('/api/server/testen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vertrauen: true, passwort: f.passwort, passphrase: f.passphrase }) });
+      const r2 = await holen('/api/server/testen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vertrauen: true, passphrase: f.passphrase }) });
       $('serverMeldung').textContent = r2.ok ? 'Server gespeichert und erreichbar.' : (r2.fehler || 'Fehler');
     } else {
       $('serverMeldung').textContent = 'Nicht bestätigt.';
@@ -195,7 +212,9 @@ async function testen() {
 }
 
 async function starten(ids) {
-  const r = await holen('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schritte: ids }) });
+  // Rohdaten, die neu geladen werden sollen (nur angehakte)
+  const neu = [...document.querySelectorAll('#schritte input[data-neu]:checked')].map((b) => b.dataset.neu);
+  const r = await holen('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schritte: ids, neu }) });
   if (r.fehler) protokoll(r.fehler);
 }
 
@@ -206,7 +225,7 @@ function ereignisseHoeren() {
     if (e.art === 'schritt') schrittStatus(e.schritt, e.status);
     else if (e.art === 'fortschritt') schrittFortschritt(e.schritt, e.anteil, e.text);
     else if (e.art === 'protokoll') protokoll(e.zeit + '  ' + e.text);
-    else if (e.art === 'fertig') protokoll(e.zeit + '  Ablauf beendet.');
+    else if (e.art === 'fertig') { protokoll(e.zeit + '  Ablauf beendet.'); schritteAktualisieren().catch(() => {}); }
   };
 }
 
@@ -214,7 +233,16 @@ const ALLE = ['osm', 'hoehen', 'netz', 'karte-werkzeuge', 'karte', 'schriften', 
 $('speichern').onclick = () => speichern().catch((e) => protokoll(e.message));
 $('testen').onclick = () => testen().catch((e) => protokoll(e.message));
 $('alles').onclick = () => starten(ALLE).catch((e) => protokoll(e.message));
-$('ausgewaehlt').onclick = () => starten([...document.querySelectorAll('#schritte input:checked')].map((b) => b.dataset.id)).catch((e) => protokoll(e.message));
+$('ausgewaehlt').onclick = () => starten([...document.querySelectorAll('#schritte > li > input[data-id]:checked')].map((b) => b.dataset.id)).catch((e) => protokoll(e.message));
+$('schluesselWaehlen').onclick = async () => {
+  try {
+    const r = await holen('/api/dialog/schluessel', { method: 'POST' });
+    if (r.pfad) $('schluessel').value = r.pfad;
+    else if (r.fehler) protokoll(r.fehler);
+  } catch (e) {
+    protokoll(e.message);
+  }
+};
 $('abbrechen').onclick = () => holen('/api/abbrechen', { method: 'POST' });
 $('beenden').onclick = async () => {
   await holen('/api/beenden', { method: 'POST' });

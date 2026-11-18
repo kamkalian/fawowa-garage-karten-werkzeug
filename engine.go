@@ -88,6 +88,7 @@ type Engine struct {
 	einst   func() Einstellungen
 	java    string
 	jar     string
+	neu     map[string]bool // Schritte, deren Rohdaten neu geladen werden
 }
 
 func neueEngine(hub *Hub, einst func() Einstellungen) *Engine {
@@ -98,13 +99,22 @@ func neueEngine(hub *Hub, einst func() Einstellungen) *Engine {
 	return e
 }
 
-// StatusListe liefert Schritte mit aktuellem Status (für die Oberfläche)
-func (e *Engine) StatusListe() []map[string]string {
+// StatusListe liefert Schritte mit Status und, bei Rohdaten, deren Stand auf der Platte (für die Oberfläche)
+func (e *Engine) StatusListe() []map[string]any {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	var out []map[string]string
+	status := make(map[string]string, len(e.status))
+	for k, v := range e.status {
+		status[k] = v
+	}
+	e.mu.Unlock()
+	arbeit, _ := filepath.Abs(e.einst().Arbeitsordner)
+	var out []map[string]any
 	for _, s := range schrittListe {
-		out = append(out, map[string]string{"id": s.ID, "name": s.Name, "status": e.status[s.ID]})
+		eintrag := map[string]any{"id": s.ID, "name": s.Name, "status": status[s.ID]}
+		if r := rohStand(s.ID, arbeit); r != nil {
+			eintrag["roh"] = r
+		}
+		out = append(out, eintrag)
 	}
 	return out
 }
@@ -116,7 +126,7 @@ func (e *Engine) Laeuft() bool {
 }
 
 // Start startet die gewählten Schritte (in der Reihenfolge der Liste). Läuft schon etwas, passiert nichts.
-func (e *Engine) Start(gewaehlt []string) error {
+func (e *Engine) Start(gewaehlt, neu []string) error {
 	e.mu.Lock()
 	if e.laeuft {
 		e.mu.Unlock()
@@ -125,6 +135,10 @@ func (e *Engine) Start(gewaehlt []string) error {
 	ctx, abbruch := context.WithCancel(context.Background())
 	e.laeuft = true
 	e.abbruch = abbruch
+	e.neu = map[string]bool{}
+	for _, id := range neu {
+		e.neu[id] = true
+	}
 	e.mu.Unlock()
 
 	ids := map[string]bool{}
@@ -163,6 +177,13 @@ func (e *Engine) Start(gewaehlt []string) error {
 		}
 	}()
 	return nil
+}
+
+// wirdNeu: die Rohdaten dieses Schritts sollen neu geladen werden (sonst nur, wenn es neuere gibt)
+func (e *Engine) wirdNeu(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.neu[id]
 }
 
 // Abbrechen beendet den Ablauf nach dem laufenden Schritt
@@ -214,7 +235,7 @@ func (e *Engine) fuehreAus(ctx context.Context, id string) error {
 			e.hub.Senden(Ereignis{Art: "fortschritt", Schritt: id, Anteil: anteil, Text: text})
 		}
 		defer func() { fortschrittHook = nil }()
-		_, _, err := ladeDatei(kartenUrl, pbf, false, false, "OSM", logf)
+		_, _, err := ladeDatei(kartenUrl, pbf, false, e.wirdNeu(id), "OSM", logf)
 		return err
 	case "hoehen":
 		fortschrittHook = func(name string, anteil float64, text string) {}
@@ -230,10 +251,10 @@ func (e *Engine) fuehreAus(ctx context.Context, id string) error {
 				return ctx.Err()
 			}
 			url := hoehenUrl + "/" + n[:3] + "/" + n + ".hgt.gz"
-			if _, _, err := ladeDatei(url, filepath.Join(hoehen, n+".hgt.gz"), true, false, "", logf); err != nil {
+			if _, _, err := ladeDatei(url, filepath.Join(hoehen, n+".hgt.gz"), true, e.wirdNeu(id), "", logf); err != nil {
 				return err
 			}
-			e.hub.Senden(Ereignis{Art: "fortschritt", Schritt: id, Anteil: float64(i+1) / float64(len(namen)), Text: n})
+			e.hub.Senden(Ereignis{Art: "fortschritt", Schritt: id, Anteil: float64(i+1) / float64(len(namen)), Text: fmt.Sprintf("%d von %d Kacheln", i+1, len(namen))})
 		}
 		return nil
 	case "netz":
@@ -333,13 +354,6 @@ func paketNetzPacken(netz, pakete string, maxMB int, logf func(string, ...any)) 
 func hochladenNeuestesPaket(ein Einstellungen, pakete string, logf func(string, ...any)) error {
 	z := ein.Server
 	zugang := ServerZugang{Host: z.Host, Port: z.Port, Benutzer: z.Benutzer, Schluessel: z.Schluessel, Ziel: z.ZielOrdner}
-	if z.PasswortVerschl != "" {
-		pw, err := Entschluesseln(z.PasswortVerschl)
-		if err != nil {
-			return err
-		}
-		zugang.Passwort = pw
-	}
 	if z.PassphraseVerschl != "" {
 		pp, err := Entschluesseln(z.PassphraseVerschl)
 		if err != nil {

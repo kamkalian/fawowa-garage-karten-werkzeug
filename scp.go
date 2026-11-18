@@ -28,7 +28,6 @@ type ServerZugang struct {
 	Host       string
 	Port       int
 	Benutzer   string
-	Passwort   string
 	Schluessel string // Pfad zur privaten Schlüsseldatei (optional)
 	Passphrase string
 	Ziel       string // Zielordner auf dem Server, z. B. /srv/apps/garage/data/import
@@ -81,7 +80,7 @@ func hostKeyPruefung(knownHostsDatei string, vertrauen bool, merken func(*Unbeka
 	}
 }
 
-// verbinden öffnet die SSH-Verbindung mit Schlüssel oder Passwort
+// verbinden öffnet die SSH-Verbindung mit dem Schlüssel
 func verbinden(z ServerZugang, knownHostsDatei string, vertrauen bool) (*ssh.Client, error) {
 	var unbekannt *UnbekannterHostError
 	var methoden []ssh.AuthMethod
@@ -101,11 +100,8 @@ func verbinden(z ServerZugang, knownHostsDatei string, vertrauen bool) (*ssh.Cli
 		}
 		methoden = append(methoden, ssh.PublicKeys(signer))
 	}
-	if z.Passwort != "" {
-		methoden = append(methoden, ssh.Password(z.Passwort))
-	}
 	if len(methoden) == 0 {
-		return nil, errors.New("Keine Anmeldung eingerichtet (Schlüssel oder Passwort)")
+		return nil, errors.New("Kein Schlüssel angegeben")
 	}
 	port := z.Port
 	if port == 0 {

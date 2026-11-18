@@ -11,7 +11,7 @@ func TestEinstellungenSpeichernOhneKlartextGeheimnis(t *testing.T) {
 	pfad := filepath.Join(t.TempDir(), "einstellungen.json")
 	e := StandardEinstellungen("C:/daten")
 	e.Server.Host = "server.example"
-	e.Server.PasswortVerschl = "VERSCHLUESSELT-BASE64=="
+	e.Server.PassphraseVerschl = "VERSCHLUESSELT-BASE64=="
 	if err := SpeichereEinstellungen(pfad, e); err != nil {
 		t.Fatal(err)
 	}
@@ -30,12 +30,12 @@ func TestEinstellungenSpeichernOhneKlartextGeheimnis(t *testing.T) {
 
 func TestEinstellungenOeffentlichZeigtKeinGeheimnis(t *testing.T) {
 	e := StandardEinstellungen("x")
-	e.Server.PasswortVerschl = "geheim-verschl"
+	e.Server.PassphraseVerschl = "geheim-verschl"
 	sicht := OeffentlichSicht(e)
-	if !sicht.PasswortGesetzt || sicht.PassphraseGesetzt {
-		t.Fatalf("Flags falsch: %+v", sicht)
+	if !sicht.PassphraseGesetzt {
+		t.Fatalf("Flag falsch: %+v", sicht)
 	}
-	if sicht.Server.PasswortVerschl != "" {
+	if sicht.Server.PassphraseVerschl != "" {
 		t.Fatal("das Geheimnis taucht in der Oberflächen-Sicht auf")
 	}
 }

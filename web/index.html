@@ -25,7 +25,9 @@
   .balken { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; display: none; }
   .balken > div { height: 100%; background: var(--akzent); width: 0%; transition: width .2s; }
   .hinweis { color: var(--muted); font-size: 13px; }
-  .roh { font-size: 13px; color: var(--muted); }
+  .lage { font-size: 14px; margin: 0 0 10px; padding: 8px 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--rand); }
+  .info { flex-basis: 100%; display: grid; gap: 2px; font-size: 13px; color: var(--muted); }
+  .info label { display: flex; gap: 4px; align-items: center; margin: 0; }
   .zahl { font-size: 13px; color: var(--text); min-width: 9rem; }
   pre { background: var(--bg); border: 1px solid var(--rand); border-radius: 6px; padding: 10px; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; width: 100%; box-sizing: border-box; margin: 0; font-size: 13px; }
   .warn { color: #fbbf24; }
@@ -66,17 +68,19 @@
 
   <section>
     <h2>Ablauf</h2>
+    <p class="lage" id="lage" role="status">Kein Ablauf aktiv.</p>
     <ul class="schritte" id="schritte"></ul>
     <div class="zeile" style="margin-top:10px">
       <button id="alles">Alles ausführen</button>
       <button class="zweit" id="ausgewaehlt">Ausgewählte ausführen</button>
       <button class="zweit" id="abbrechen">Abbrechen</button>
     </div>
-    <p class="hinweis">Vorhandene Rohdaten werden nicht noch einmal geladen, außer „neu laden“ ist angehakt. Die Karten-Schritte (Java, Planetiler, Schriften) kommen in einem späteren Schritt. Bis dahin werden sie als „ausstehend“ übersprungen.</p>
+    <p class="hinweis">Je Schritt: wann er zuletzt lief, wie er ausging und ob Daten vorhanden sind. Vorhandene Rohdaten werden nur neu geladen, wenn „neu laden“ angehakt ist. Die Karten-Schritte (Java, Planetiler, Schriften) kommen in einem späteren Schritt; bis dahin werden sie als „ausstehend“ übersprungen.</p>
   </section>
 
   <section>
     <h2>Protokoll</h2>
+    <p class="hinweis">Die letzten 400 Zeilen. Vollständig steht das Protokoll im Arbeitsordner unter „protokoll“.</p>
     <pre id="protokoll"></pre>
   </section>
 
@@ -86,7 +90,30 @@
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const protokoll = (text) => { const p = $('protokoll'); p.textContent += text + '\n'; p.scrollTop = p.scrollHeight; };
+
+// Protokoll: nur die letzten Zeilen, damit die Seite bei vielen Meldungen flüssig bleibt
+const protokollZeilen = [];
+const protokoll = (text) => {
+  protokollZeilen.push(text);
+  if (protokollZeilen.length > 400) protokollZeilen.splice(0, protokollZeilen.length - 400);
+  const p = $('protokoll');
+  p.textContent = protokollZeilen.join('\n') + '\n';
+  p.scrollTop = p.scrollHeight;
+};
+
+// Was gerade läuft und wann zuletzt etwas gemeldet wurde
+let laufend = null;            // { id, name } des laufenden Schritts
+let letzteMeldung = Date.now();
+const schrittNamen = {};
+function lageAnzeigen() {
+  const el = $('lage');
+  if (!laufend) { el.textContent = 'Kein Ablauf aktiv.'; return; }
+  const sek = Math.round((Date.now() - letzteMeldung) / 1000);
+  let text = 'Läuft: ' + laufend.name + ' · letzte Meldung vor ' + sek + ' s';
+  if (sek > 120) text += ' · lange ohne Meldung, Details im Protokoll';
+  el.textContent = text;
+}
+setInterval(lageAnzeigen, 1000);
 
 async function holen(pfad, optionen) {
   const antwort = await fetch(pfad, optionen);
@@ -120,13 +147,31 @@ function formularLesen() {
 }
 
 function statusText(s) {
-  return { offen: 'offen', laeuft: 'läuft', fertig: 'fertig', fehler: 'Fehler', ausstehend: 'ausstehend', uebersprungen: 'übersprungen' }[s] || s;
+  return { offen: 'offen', laeuft: 'läuft', fertig: 'fertig', fehler: 'Fehler', ausstehend: 'ausstehend', uebersprungen: 'übersprungen', abgebrochen: 'abgebrochen' }[s] || s;
+}
+
+function dauerText(s) {
+  return s >= 60 ? Math.floor(s / 60) + ' min ' + (s % 60) + ' s' : s + ' s';
+}
+
+function letzterText(l) {
+  if (!l) return 'noch nicht gelaufen';
+  let t = 'zuletzt: ' + l.zeit + ' · ' + statusText(l.ergebnis);
+  if (l.ergebnis === 'fehler' && l.meldung) t += ': ' + l.meldung;
+  if (l.dauerSek) t += ' · dauerte ' + dauerText(l.dauerSek);
+  return t;
+}
+
+function datenText(d) {
+  if (!d.vorhanden) return 'Daten: keine' + (d.detail ? ' (' + d.detail + ')' : '');
+  return 'Daten: ja' + (d.seit ? ' · seit ' + d.seit : '') + (d.groesse ? ' · ' + d.groesse : '') + (d.detail ? ' · ' + d.detail : '');
 }
 
 function schritteZeichnen(liste) {
   const ul = $('schritte');
   ul.innerHTML = '';
   for (const s of liste) {
+    schrittNamen[s.id] = s.name;
     const li = document.createElement('li');
     li.dataset.id = s.id;
     const box = document.createElement('input');
@@ -134,18 +179,22 @@ function schritteZeichnen(liste) {
     const name = document.createElement('span'); name.textContent = s.name; name.style.flex = '1';
     const st = document.createElement('span'); st.className = 'st ' + s.status; st.textContent = statusText(s.status);
     const zahl = document.createElement('span'); zahl.className = 'zahl';
+    li.append(box, name, st, zahl);
+
+    const info = document.createElement('div'); info.className = 'info';
+    const zeileLetzter = document.createElement('div'); zeileLetzter.textContent = letzterText(s.letzter);
+    const zeileDaten = document.createElement('div'); zeileDaten.textContent = datenText(s.daten);
+    info.append(zeileLetzter, zeileDaten);
+    if (s.daten.vorhanden && (s.id === 'osm' || s.id === 'hoehen')) {
+      const neuLabel = document.createElement('label');
+      const neu = document.createElement('input'); neu.type = 'checkbox'; neu.dataset.neu = s.id;
+      neuLabel.append(neu, ' neu laden (vorhandene Daten ersetzen)');
+      info.append(neuLabel);
+    }
+    li.append(info);
+
     const balken = document.createElement('div'); balken.className = 'balken';
     balken.appendChild(document.createElement('div'));
-    li.append(box, name, st, zahl);
-    if (s.roh) {
-      const roh = document.createElement('span'); roh.className = 'roh';
-      roh.textContent = 'vorhanden seit ' + s.roh.seit + ' · ' + s.roh.groesse + (s.roh.detail ? ' · ' + s.roh.detail : '');
-      const neuLabel = document.createElement('label'); neuLabel.className = 'roh';
-      neuLabel.style.display = 'flex'; neuLabel.style.gap = '4px'; neuLabel.style.alignItems = 'center';
-      const neu = document.createElement('input'); neu.type = 'checkbox'; neu.dataset.neu = s.id;
-      neuLabel.append(neu, ' neu laden');
-      li.append(roh, neuLabel);
-    }
     li.append(balken);
     ul.append(li);
   }
@@ -162,6 +211,8 @@ function schrittLi(id) {
 
 function schrittStatus(id, status) {
   const li = schrittLi(id);
+  if (status === 'laeuft') laufend = { id, name: schrittNamen[id] || id };
+  else if (laufend && laufend.id === id) laufend = null;
   if (!li) return;
   const st = li.querySelector('.st');
   st.className = 'st ' + status; st.textContent = statusText(status);
@@ -181,6 +232,9 @@ async function laden() {
   const z = await holen('/api/zustand');
   formularFuellen(z.einstellungen);
   schritteZeichnen(z.schritte);
+  // Lief schon ein Ablauf, bevor die Seite geladen wurde, zeigt die Statuszeile den Schritt
+  const gerade = z.schritte.find((s) => s.status === 'laeuft');
+  if (z.laeuft && gerade) laufend = { id: gerade.id, name: gerade.name };
 }
 
 async function speichern() {
@@ -222,10 +276,11 @@ function ereignisseHoeren() {
   const quelle = new EventSource('/api/ereignisse');
   quelle.onmessage = (m) => {
     const e = JSON.parse(m.data);
+    letzteMeldung = Date.now();
     if (e.art === 'schritt') schrittStatus(e.schritt, e.status);
     else if (e.art === 'fortschritt') schrittFortschritt(e.schritt, e.anteil, e.text);
     else if (e.art === 'protokoll') protokoll(e.zeit + '  ' + e.text);
-    else if (e.art === 'fertig') { protokoll(e.zeit + '  Ablauf beendet.'); schritteAktualisieren().catch(() => {}); }
+    else if (e.art === 'fertig') { laufend = null; protokoll(e.zeit + '  Ablauf beendet.'); schritteAktualisieren().catch(() => {}); }
   };
 }
 
@@ -249,7 +304,7 @@ $('beenden').onclick = async () => {
   document.body.innerHTML = '<main><p>Das Werkzeug ist beendet. Du kannst dieses Fenster schließen.</p></main>';
 };
 
-laden().then(ereignisseHoeren).catch((e) => protokoll('Fehler: ' + e.message));
+laden().then(ereignisseHoeren).then(() => lageAnzeigen()).catch((e) => protokoll('Fehler: ' + e.message));
 </script>
 </body>
 </html>

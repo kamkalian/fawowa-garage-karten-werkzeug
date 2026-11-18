@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,10 +50,17 @@ type Hub struct {
 func neuerHub() *Hub { return &Hub{kanaele: map[chan Ereignis]bool{}} }
 
 func (h *Hub) Abonnieren() chan Ereignis {
-	k := make(chan Ereignis, 256)
+	k := make(chan Ereignis, 1024)
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.kanaele[k] = true
-	h.mu.Unlock()
+	// Die letzten Ereignisse gehen an die neue Verbindung, damit die Seite nach dem Neuladen zeigt, was zuletzt passiert ist
+	for _, e := range h.letzte {
+		select {
+		case k <- e:
+		default:
+		}
+	}
 	return k
 }
 
@@ -99,7 +107,7 @@ func neueEngine(hub *Hub, einst func() Einstellungen) *Engine {
 	return e
 }
 
-// StatusListe liefert Schritte mit Status und, bei Rohdaten, deren Stand auf der Platte (für die Oberfläche)
+// StatusListe liefert Schritte mit Status, Stand der Daten und letztem Lauf (für die Oberfläche)
 func (e *Engine) StatusListe() []map[string]any {
 	e.mu.Lock()
 	status := make(map[string]string, len(e.status))
@@ -110,9 +118,9 @@ func (e *Engine) StatusListe() []map[string]any {
 	arbeit, _ := filepath.Abs(e.einst().Arbeitsordner)
 	var out []map[string]any
 	for _, s := range schrittListe {
-		eintrag := map[string]any{"id": s.ID, "name": s.Name, "status": status[s.ID]}
-		if r := rohStand(s.ID, arbeit); r != nil {
-			eintrag["roh"] = r
+		eintrag := map[string]any{"id": s.ID, "name": s.Name, "status": status[s.ID], "daten": datenStand(s.ID, arbeit)}
+		if l := schrittStandLesen(arbeit, s.ID).Letzter; l != nil {
+			eintrag["letzter"] = l
 		}
 		out = append(out, eintrag)
 	}
@@ -153,6 +161,7 @@ func (e *Engine) Start(gewaehlt, neu []string) error {
 			e.mu.Unlock()
 			e.hub.Senden(Ereignis{Art: "fertig"})
 		}()
+		arbeit, _ := filepath.Abs(e.einst().Arbeitsordner)
 		for _, s := range schrittListe {
 			if !ids[s.ID] {
 				continue
@@ -163,16 +172,25 @@ func (e *Engine) Start(gewaehlt, neu []string) error {
 				return
 			}
 			e.setze(s.ID, "laeuft")
+			start := time.Now()
 			err := e.fuehreAus(ctx, s.ID)
 			switch {
 			case err == errAusstehend:
 				e.setze(s.ID, "ausstehend")
+				letzterLaufNotieren(arbeit, s.ID, start, "ausstehend", "")
+			case ctx.Err() != nil:
+				e.setze(s.ID, "offen")
+				letzterLaufNotieren(arbeit, s.ID, start, "abgebrochen", "")
+				e.protokoll("Abgebrochen.")
+				return
 			case err != nil:
 				e.setze(s.ID, "fehler")
+				letzterLaufNotieren(arbeit, s.ID, start, "fehler", err.Error())
 				e.protokoll("Fehler in „" + s.Name + "“: " + err.Error())
 				return
 			default:
 				e.setze(s.ID, "fertig")
+				letzterLaufNotieren(arbeit, s.ID, start, "fertig", "")
 			}
 		}
 	}()
@@ -307,7 +325,9 @@ func (e *Engine) fuehreAus(ctx context.Context, id string) error {
 	case "paket-netz":
 		return paketNetzPacken(netz, pakete, ein.MaxZipMB, logf)
 	case "hochladen":
-		return hochladenNeuestesPaket(ein, pakete, logf)
+		return hochladenNeuestesPaket(ctx, ein, pakete, arbeit, logf, func(text string, anteil float64) {
+			e.hub.Senden(Ereignis{Art: "fortschritt", Schritt: id, Anteil: anteil, Text: text})
+		})
 	}
 	return fmt.Errorf("unbekannter Schritt %s", id)
 }
@@ -350,8 +370,10 @@ func paketNetzPacken(netz, pakete string, maxMB int, logf func(string, ...any)) 
 	return nil
 }
 
-// hochladenNeuestesPaket lädt das jüngste Wegenetz-Paket und das jüngste Karten-Paket auf den Server (sofern vorhanden)
-func hochladenNeuestesPaket(ein Einstellungen, pakete string, logf func(string, ...any)) error {
+// hochladenNeuestesPaket lädt das jüngste Wegenetz-Paket und das jüngste Karten-Paket auf den Server (sofern vorhanden).
+// Der Fortschritt kommt höchstens zweimal pro Sekunde. Bleibt er fünf Minuten aus, wird die Verbindung geschlossen, damit der
+// Ablauf nicht hängen bleibt. Abbrechen beendet die Übertragung ebenfalls.
+func hochladenNeuestesPaket(ctx context.Context, ein Einstellungen, pakete, arbeit string, logf func(string, ...any), fortschritt func(text string, anteil float64)) error {
 	z := ein.Server
 	zugang := ServerZugang{Host: z.Host, Port: z.Port, Benutzer: z.Benutzer, Schluessel: z.Schluessel, Ziel: z.ZielOrdner}
 	if z.PassphraseVerschl != "" {
@@ -375,12 +397,52 @@ func hochladenNeuestesPaket(ein Einstellungen, pakete string, logf func(string, 
 	if len(pakete2) == 0 {
 		return fmt.Errorf("kein Paket vorhanden. Bitte zuerst „Pakete packen“ ausführen.")
 	}
+	logf("Verbinde mit dem Server ...")
 	c, err := verbinden(zugang, kh, false)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	logf("Verbunden.")
+
+	// Letzte Aktivität (Unix-Nanosekunden): jede Fortschrittsmeldung und jeder Paketstart zählt
+	var aktiv atomic.Int64
+	aktiv.Store(time.Now().UnixNano())
+	stopp := make(chan struct{})
+	defer close(stopp)
+	go func() {
+		pruefen := time.NewTicker(10 * time.Second)
+		halten := time.NewTicker(20 * time.Second)
+		defer pruefen.Stop()
+		defer halten.Stop()
+		for {
+			select {
+			case <-stopp:
+				return
+			case <-ctx.Done():
+				c.Close()
+				return
+			case <-pruefen.C:
+				if time.Since(time.Unix(0, aktiv.Load())) > 5*time.Minute {
+					logf("Seit 5 Minuten keine Übertragung. Die Verbindung wird geschlossen.")
+					c.Close()
+					return
+				}
+			case <-halten.C:
+				// Keepalive: antwortet der Server nicht mehr, ist die Verbindung tot. Eigene Routine, damit die Prüfung weiterläuft.
+				go func() {
+					if _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+						c.Close()
+					}
+				}()
+			}
+		}
+	}()
+
 	for _, name := range pakete2 {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		ordner := filepath.Join(pakete, name)
 		version := strings.SplitN(name, "-", 2)[1]
 		art := strings.SplitN(name, "-", 2)[0]
@@ -398,12 +460,44 @@ func hochladenNeuestesPaket(ein Einstellungen, pakete string, logf func(string, 
 		if err == nil && frei < int64(float64(gesamt)*2.2) {
 			return fmt.Errorf("auf dem Server fehlen etwa %d MB für %s", (int64(float64(gesamt)*2.2)-frei)/1_000_000, name)
 		}
-		logf("Lade %s hoch (%d ZIP-Dateien, %d MB)", name, len(m.Zips), gesamt/1_000_000)
-		if err := PaketHochladen(c, z.ZielOrdner, name, ordner, m.Zips, manifestPfad, func(zip string, gesendet, groesse int64) {
-			logf("%s: %d von %d MB", zip, gesendet/1_000_000, groesse/1_000_000)
-		}); err != nil {
+		logf("Lade %s hoch (%d ZIP-Dateien, %s)", name, len(m.Zips), groesseText(gesamt))
+		aktiv.Store(time.Now().UnixNano())
+
+		// Fortschritt gedrosselt: höchstens alle halbe Sekunde eine Meldung; die Geschwindigkeit gilt seit der letzten Meldung
+		var letzterZip string
+		var letzteZeit time.Time
+		var letzterStand int64
+		zipFortschritt := func(zip string, gesendet, groesse int64) {
+			jetzt := time.Now()
+			aktiv.Store(jetzt.UnixNano())
+			if zip != letzterZip {
+				letzterZip = zip
+				letzteZeit = jetzt.Add(-time.Second)
+				letzterStand = 0
+			}
+			if gesendet < groesse && jetzt.Sub(letzteZeit) < 500*time.Millisecond {
+				return
+			}
+			sek := jetzt.Sub(letzteZeit).Seconds()
+			if sek < 0.001 {
+				sek = 0.001
+			}
+			rate := int64(float64(gesendet-letzterStand) / sek)
+			letzteZeit, letzterStand = jetzt, gesendet
+			anteil := 0.0
+			if groesse > 0 {
+				anteil = float64(gesendet) / float64(groesse)
+			}
+			fortschritt(fmt.Sprintf("%s: %s von %s · %s/s", zip, groesseText(gesendet), groesseText(groesse), groesseText(rate)), anteil)
+		}
+		if err := PaketHochladen(c, z.ZielOrdner, name, ordner, m.Zips, manifestPfad, zipFortschritt); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
+		paketHochgeladenNotieren(arbeit, name)
+		logf("%s ist auf dem Server.", name)
 	}
 	return nil
 }
